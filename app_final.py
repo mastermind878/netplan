@@ -80,6 +80,37 @@ def create_app() -> FastAPI:
     def network_info(cidr: str = Query(..., max_length=64, examples=["192.168.1.42/24"])):
         return describe(parse_network(cidr))
 
+    @api.get("/networks/contains", tags=["IPv4"], summary="Проверить принадлежность адреса")
+    def contains(cidr: str = Query(..., max_length=64), ip: str = Query(..., max_length=15)):
+        network = parse_network(cidr)
+        try:
+            address = IPv4Address(ip)
+        except ValueError:
+            raise HTTPException(422, "Некорректный IPv4-адрес") from None
+        belongs = address in network
+        usable = belongs and (network.prefixlen >= 31 or
+                              address not in {network.network_address, network.broadcast_address})
+        return {"network": str(network), "ip": str(address),
+                "belongs": belongs, "usable_as_host": usable}
+
+    @api.get("/networks/split", tags=["IPv4"], summary="Разбить сеть на равные подсети")
+    def split(cidr: str = Query(..., max_length=64), new_prefix: int = Query(..., ge=0, le=32)):
+        network = parse_network(cidr)
+        if new_prefix <= network.prefixlen:
+            raise HTTPException(422, "Новый префикс должен быть больше исходного")
+        count = 2 ** (new_prefix - network.prefixlen)
+        # Check before iteration: splitting /0 into /32 must not exhaust memory.
+        if count > max_subnets:
+            raise HTTPException(422, f"Результат содержит {count} подсетей; лимит MAX_SUBNETS={max_subnets}")
+        return {"network": str(network), "count": count,
+                "subnets": [describe(n) for n in network.subnets(new_prefix=new_prefix)]}
+
+    @api.get("/networks/compare", tags=["IPv4"], summary="Проверить пересечение сетей")
+    def compare(left: str = Query(..., max_length=64), right: str = Query(..., max_length=64)):
+        a, b = parse_network(left), parse_network(right)
+        return {"left": str(a), "right": str(b), "overlaps": a.overlaps(b),
+                "left_subnet_of_right": a.subnet_of(b), "right_subnet_of_left": b.subnet_of(a)}
+
     return api
 
 
